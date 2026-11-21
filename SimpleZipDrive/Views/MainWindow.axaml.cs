@@ -28,6 +28,12 @@ public partial class MainWindow : Window, IDisposable
     private readonly IMountService _mountService;
     private readonly IScreenshotService _screenshotService;
     private readonly ISettingsService _settingsService;
+    private readonly UnmountIpc _unmountIpc = new();
+    private TrayIcon? _trayIcon;
+    private bool _trayStartup;
+    private bool _allowExit;
+    private bool _commandLineMount;
+
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="MainWindow" /> class and wires it to the
@@ -52,6 +58,7 @@ public partial class MainWindow : Window, IDisposable
         UpdateLogText();
 
         Opened += MainWindow_OpenedAsync;
+        if (OperatingSystem.IsWindows() && App.StartupArgs.Length > 0) InitializeTrayIcon();
     }
 
     /// <summary>
@@ -68,6 +75,13 @@ public partial class MainWindow : Window, IDisposable
             // Unsubscribe from mount service events
             _mountService.MountStatusChanged -= OnMountStatusChanged;
 
+            _unmountIpc.Dispose();
+            if (_trayIcon != null)
+            {
+                _trayIcon.IsVisible = false;
+                _trayIcon.Dispose();
+                _trayIcon = null;
+            }
             // Dispose the mount service (which handles unmounting if needed)
             (_mountService as IDisposable)?.Dispose();
         }
@@ -136,9 +150,18 @@ public partial class MainWindow : Window, IDisposable
         {
             Opened -= MainWindow_OpenedAsync;
             var args = App.StartupArgs;
+            _commandLineMount = args.Length > 0;
+            // CLI mounts default to tray; --show keeps the original visible GUI.
+            _trayStartup = OperatingSystem.IsWindows() && _commandLineMount &&
+                           !args.Contains("--show", StringComparer.OrdinalIgnoreCase);
+            if (_trayStartup) ShowInTaskbar = false;
             if (args.Length > 0)
             {
-                await ProcessCommandLineArgsAsync(args);
+                await ProcessCommandLineArgsAsync(args.Where(a => !a.Equals("--show", StringComparison.OrdinalIgnoreCase)).ToArray());
+                if (_trayStartup && _mountService.IsMounted)
+                    Hide();
+                else
+                    ShowInTaskbar = true; // Keep errors visible, not a stranded hidden window.
                 return;
             }
 
@@ -535,6 +558,12 @@ public partial class MainWindow : Window, IDisposable
 
     private void MainWindow_Closing(object? sender, WindowClosingEventArgs e)
     {
+        if (_trayStartup && !_allowExit && _mountService.IsMounted)
+        {
+            e.Cancel = true;
+            Hide();
+            return;
+        }
         if (!App.TryBeginShutdown())
             return;
 
@@ -630,6 +659,26 @@ public partial class MainWindow : Window, IDisposable
 
     private void UpdateMountStatus()
     {
+        // One pipe per mount point; lets a second process target the owning instance.
+        if (OperatingSystem.IsWindows())
+        {
+            if (_mountService.IsMounted && _mountService.CurrentMountPoint is { } point)
+                _unmountIpc.Start(point, async () =>
+                {
+                    await Dispatcher.UIThread.InvokeAsync(async () =>
+                    {
+                        if (_mountService.IsMounted)
+                            await _mountService.UnmountAsync();
+                    });
+                    return !_mountService.IsMounted;
+                });
+            else
+                _unmountIpc.Stop();
+        }
+        if (_trayIcon != null)
+            _trayIcon.ToolTipText = _mountService.IsMounted
+                ? $"SimpleZipDrive: {_mountService.CurrentMountPoint}"
+                : "SimpleZipDrive (not mounted)";
         if (_mountService.IsMounted)
         {
             MountStatusText.Text =
@@ -651,6 +700,57 @@ public partial class MainWindow : Window, IDisposable
             UnmountButton.IsEnabled = false;
             MountButton.IsEnabled = true;
         }
+    }
+
+    private void InitializeTrayIcon()
+    {
+        var menu = new NativeMenu();
+        var open = new NativeMenuItem("Open SimpleZipDrive");
+        open.Click += (_, _) => RestoreFromTray();
+        menu.Add(open);
+        var unmount = new NativeMenuItem("Unmount");
+        unmount.Click += async (_, _) =>
+        {
+            if (_mountService.IsMounted)
+            {
+                try { await _mountService.UnmountAsync(); }
+                catch (Exception ex)
+                {
+                    _loggingService.LogError($"Tray unmount failed: {ex.Message}");
+                    RestoreFromTray();
+                }
+            }
+        };
+        menu.Add(unmount);
+        var exit = new NativeMenuItem("Exit");
+        exit.Click += (_, _) =>
+        {
+            _allowExit = true;
+            Close();
+        };
+        menu.Add(exit);
+        // WindowIcon loads the existing bundled application icon (not a new asset).
+        using var iconStream = Avalonia.Platform.AssetLoader.Open(
+            new Uri("avares://SimpleZipDrive/icon/zip.png"));
+        _trayIcon = new TrayIcon
+        {
+            ToolTipText = "SimpleZipDrive",
+            Menu = menu,
+            IsVisible = true
+        };
+        _trayIcon.Icon = new WindowIcon(iconStream);
+        _trayIcon.Clicked += (_, _) => RestoreFromTray();
+        // Avalonia owns the native tray icon through the application collection.
+        if (Application.Current != null)
+            TrayIcon.SetIcons(Application.Current, new TrayIcons { _trayIcon });
+    }
+
+    private void RestoreFromTray()
+    {
+        ShowInTaskbar = true;
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
     }
 
     private static bool IsSupportedArchiveExtension(string filePath)

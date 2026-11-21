@@ -83,15 +83,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: windows
+          - name: windows-x64
             os: windows-latest
-            rids: win-x64,win-arm64
-          - name: linux
-            os: ubuntu-latest
-            rids: linux-x64,linux-arm64
-          - name: macos
-            os: macos-latest
-            rids: osx-x64,osx-arm64
+            rids: win-x64
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -135,8 +129,6 @@ jobs:
           name: release-bundles-${{ matrix.name }}
           path: |
             ${{ runner.temp }}/bundles/*.zip
-            ${{ runner.temp }}/bundles/*.tar.gz
-            ${{ runner.temp }}/bundles/*.dmg
           if-no-files-found: error
           retention-days: 30
 
@@ -168,12 +160,7 @@ jobs:
         shell: pwsh
         run: |
           $expected = @(
-            "release_$($env:VERSION)_win-x64.zip",
-            "release_$($env:VERSION)_win-arm64.zip",
-            "release_$($env:VERSION)_linux-x64.tar.gz",
-            "release_$($env:VERSION)_linux-arm64.tar.gz",
-            "release_$($env:VERSION)_osx-x64.dmg",
-            "release_$($env:VERSION)_osx-arm64.dmg"
+            "release_$($env:VERSION)_win-x64.zip"
           )
           foreach ($name in $expected) {
             if (-not (Test-Path -LiteralPath (Join-Path 'bundles' $name))) { throw "Missing expected bundle: $name" }
@@ -202,7 +189,7 @@ jobs:
         run: |
           TAG="release_${VERSION}"
           shopt -s nullglob
-          assets=(bundles/*.zip bundles/*.tar.gz bundles/*.dmg)
+          assets=(bundles/*_win-x64.zip)
           if [ "${#assets[@]}" -eq 0 ]; then
             echo "No release bundles were downloaded." >&2
             exit 1

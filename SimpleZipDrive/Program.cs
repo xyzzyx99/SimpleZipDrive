@@ -16,6 +16,27 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // --unmount is a client command: do not create a second GUI/application instance.
+        if (OperatingSystem.IsWindows() && args.Length >= 1 &&
+            args[0].Equals("--unmount", StringComparison.OrdinalIgnoreCase))
+        {
+            if (args.Length != 2)
+            {
+                Console.Error.WriteLine("Usage: SimpleZipDrive.exe --unmount <drive-letter-or-mount-folder>");
+                Environment.ExitCode = 2;
+                return;
+            }
+            try
+            {
+                Environment.ExitCode = UnmountIpc.SendAsync(args[1]).GetAwaiter().GetResult() ? 0 : 1;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Unmount failed: {ex.Message}");
+                Environment.ExitCode = 1;
+            }
+            return;
+        }
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

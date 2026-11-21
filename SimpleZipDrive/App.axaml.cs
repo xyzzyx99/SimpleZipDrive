@@ -125,7 +125,18 @@ public class App : Application
                 {
                     var mainWindow = new MainWindow();
                     desktop.MainWindow = mainWindow;
+                    // Mount commands stay in the notification area; --show retains GUI mode.
+                    var trayStart = OperatingSystem.IsWindows() && StartupArgs.Length > 0 &&
+                                    !StartupArgs.Contains("--show", StringComparer.OrdinalIgnoreCase);
+                    if (trayStart)
+                    {
+                        // Avoid presenting a normal-sized main window before Opened runs.
+                        mainWindow.ShowInTaskbar = false;
+                        mainWindow.WindowState = WindowState.Minimized;
+                    }
                     mainWindow.Show();
+                    if (trayStart)
+                        mainWindow.Hide();
                 }
                 catch (Exception ex)
                 {

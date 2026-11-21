@@ -278,6 +278,8 @@ public partial class MainWindow : Window, IDisposable
         {
 #pragma warning disable IL3002
             await _mountService.MountAsync(zipFilePath, mountPointArg);
+            // Register command listener as soon as mounting completes.
+            UpdateMountStatus();
 #pragma warning restore IL3002
         }
         catch (Exception ex)

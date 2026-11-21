@@ -28,7 +28,9 @@ internal static class Program
             }
             try
             {
-                Environment.ExitCode = UnmountIpc.SendAsync(args[1]).GetAwaiter().GetResult() ? 0 : 1;
+                // Hard bound: a broken/stale server must never hang the CLI indefinitely.
+                Environment.ExitCode = UnmountIpc.SendAsync(args[1])
+                    .WaitAsync(TimeSpan.FromSeconds(8)).GetAwaiter().GetResult() ? 0 : 1;
             }
             catch (Exception ex)
             {

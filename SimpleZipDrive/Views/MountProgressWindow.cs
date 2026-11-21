@@ -32,7 +32,7 @@ internal sealed class MountProgressWindow : Window
 
     public MountProgressWindow(string archiveName, string? mountPoint)
     {
-        Title = WindowPrefix + Environment.ProcessId.ToString("D10") + ":" +
+        Title = WindowPrefix + Environment.ProcessId.ToString("D10", System.Globalization.CultureInfo.InvariantCulture) + ":" +
                 Guid.NewGuid().ToString("N")[..8];
         Width = NotificationWidth;
         Height = NotificationHeight;
@@ -40,7 +40,7 @@ internal sealed class MountProgressWindow : Window
         ShowActivated = false;
         ShowInTaskbar = false;
         Topmost = true;
-        SystemDecorations = SystemDecorations.None;
+        WindowDecorations = Avalonia.Controls.WindowDecorations.None;
         WindowStartupLocation = WindowStartupLocation.Manual;
         Background = Brushes.Transparent;
 
@@ -149,7 +149,7 @@ internal sealed class MountProgressWindow : Window
             return true;
         }, 0);
         windows.Sort((a, b) => string.CompareOrdinal(a.Title, b.Title));
-        var slot = windows.FindIndex(w => w.Title == Title);
+        var slot = windows.FindIndex(w => string.Equals(w.Title, Title, StringComparison.Ordinal));
         if (slot < 0) slot = 0;
 
         var area = screen.WorkingArea;
@@ -159,7 +159,7 @@ internal sealed class MountProgressWindow : Window
         var margin = (int)Math.Ceiling(MarginDip * scale);
         var x = area.Right - (int)Math.Ceiling(NotificationWidth * scale) - margin;
         var y = area.Bottom - height - margin - slot * (height + gap);
-        Position = new PixelPoint(x, Math.Max(area.Top + margin, y));
+        Position = new PixelPoint(x, Math.Max(area.Y + margin, y));
     }
 
     private delegate bool EnumWindowsCallback(nint hWnd, nint lParam);

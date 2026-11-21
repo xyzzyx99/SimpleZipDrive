@@ -30,6 +30,7 @@ public partial class MainWindow : Window, IDisposable
     private readonly ISettingsService _settingsService;
     private readonly UnmountIpc _unmountIpc = new();
     private TrayIcon? _trayIcon;
+    private MountProgressWindow? _mountProgressWindow;
     private bool _trayStartup;
     private bool _allowExit;
     private bool _commandLineMount;
@@ -499,6 +500,7 @@ public partial class MainWindow : Window, IDisposable
             try
             {
                 notification = new MountProgressWindow(Path.GetFileName(archivePath), mountPoint);
+                _mountProgressWindow = notification;
                 notification.Begin();
             }
             catch (Exception ex)
@@ -518,6 +520,11 @@ public partial class MainWindow : Window, IDisposable
             catch (Exception ex)
             {
                 _loggingService.LogError($"Could not close mount progress: {ex.Message}");
+            }
+            finally
+            {
+                if (ReferenceEquals(_mountProgressWindow, notification))
+                    _mountProgressWindow = null;
             }
         }
     }
@@ -716,6 +723,12 @@ public partial class MainWindow : Window, IDisposable
 
     private void UpdateMountStatus()
     {
+        if (_mountService.IsMounted)
+        {
+            // MountAsync stays pending until unmount. End the popup on mount success.
+            _mountProgressWindow?.Finish();
+            _mountProgressWindow = null;
+        }
         if (_mountService.IsMounted) _hadSuccessfulMount = true;
         // One pipe per mount point; lets a second process target the owning instance.
         if (OperatingSystem.IsWindows())

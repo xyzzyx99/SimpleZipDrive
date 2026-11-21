@@ -21,6 +21,7 @@ public class App : Application
 
     /// <summary>Gets the command-line arguments the application was started with.</summary>
     internal static string[] StartupArgs { get; private set; } = [];
+    internal static MainWindow? HiddenTrayWindow { get; private set; }
 
     /// <summary>
     ///     Global cancellation token source for graceful shutdown of background tasks.
@@ -124,19 +125,25 @@ public class App : Application
                 try
                 {
                     var mainWindow = new MainWindow();
-                    desktop.MainWindow = mainWindow;
-                    // Mount commands stay in the notification area; --show retains GUI mode.
+                    // Avalonia's desktop lifetime automatically calls MainWindow.Show()
+                    // when its event loop starts. Merely hiding it here is insufficient.
                     var trayStart = OperatingSystem.IsWindows() && StartupArgs.Length > 0 &&
                                     !StartupArgs.Contains("--show", StringComparer.OrdinalIgnoreCase);
                     if (trayStart)
                     {
-                        // Avoid presenting a normal-sized main window before Opened runs.
+                        // Do not assign desktop.MainWindow: Avalonia would show it.
+                        // Preserve a reference for tray operation and shutdown cleanup.
+                        desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                        HiddenTrayWindow = mainWindow;
                         mainWindow.ShowInTaskbar = false;
-                        mainWindow.WindowState = WindowState.Minimized;
+                        Avalonia.Threading.Dispatcher.UIThread.Post(
+                            mainWindow.StartHiddenMount, Avalonia.Threading.DispatcherPriority.Background);
                     }
-                    mainWindow.Show();
-                    if (trayStart)
-                        mainWindow.Hide();
+                    else
+                    {
+                        desktop.MainWindow = mainWindow;
+                        mainWindow.Show();
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -291,6 +298,9 @@ public class App : Application
             {
                 if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime { MainWindow: IDisposable disposable })
                     disposable.Dispose();
+                else
+                    HiddenTrayWindow?.Dispose();
+                HiddenTrayWindow = null;
             }
             catch (Exception ex)
             {

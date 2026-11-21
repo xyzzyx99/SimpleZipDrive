@@ -33,6 +33,7 @@ public partial class MainWindow : Window, IDisposable
     private bool _trayStartup;
     private bool _allowExit;
     private bool _commandLineMount;
+    private bool _hadSuccessfulMount;
 
 
     /// <summary>
@@ -60,6 +61,11 @@ public partial class MainWindow : Window, IDisposable
         Opened += MainWindow_OpenedAsync;
         if (OperatingSystem.IsWindows() && App.StartupArgs.Length > 0) InitializeTrayIcon();
     }
+
+    // Execute the normal startup mount without ever showing a main window.
+    // The handler removes its own Opened subscription, so restoring from the
+    // tray later does not mount the same archive a second time.
+    internal void StartHiddenMount() => MainWindow_OpenedAsync(this, EventArgs.Empty);
 
     /// <summary>
     ///     Unsubscribes from service events and disposes the mount service.
@@ -156,16 +162,15 @@ public partial class MainWindow : Window, IDisposable
                            !args.Contains("--show", StringComparer.OrdinalIgnoreCase);
             if (_trayStartup)
             {
-                // The Opened event runs when App calls Show(). Hide synchronously,
-                // before awaiting MountAsync, so there is no visible mounting window.
+                // App deliberately did not assign this window as MainWindow,
+                // so it cannot be auto-shown by the Avalonia desktop lifetime.
                 ShowInTaskbar = false;
-                Hide();
             }
             if (args.Length > 0)
             {
                 await ProcessCommandLineArgsAsync(args.Where(a => !a.Equals("--show", StringComparison.OrdinalIgnoreCase)).ToArray());
-                if (_trayStartup && !_mountService.IsMounted)
-                    RestoreFromTray(); // Mount failed: show the error/log UI.
+                if (_trayStartup && !_hadSuccessfulMount && !_mountService.IsMounted)
+                    RestoreFromTray(); // Initial mount failed: show error/log UI.
                 return;
             }
 
@@ -667,6 +672,7 @@ public partial class MainWindow : Window, IDisposable
 
     private void UpdateMountStatus()
     {
+        if (_mountService.IsMounted) _hadSuccessfulMount = true;
         // One pipe per mount point; lets a second process target the owning instance.
         if (OperatingSystem.IsWindows())
         {
@@ -734,7 +740,10 @@ public partial class MainWindow : Window, IDisposable
         exit.Click += (_, _) =>
         {
             _allowExit = true;
-            Close();
+            // A never-shown tray window may not raise Closing on Close().
+            // Start the same shutdown procedure explicitly.
+            if (App.TryBeginShutdown())
+                _ = PerformShutdownAsync();
         };
         menu.Add(exit);
         // WindowIcon loads the existing bundled application icon (not a new asset).
@@ -755,9 +764,14 @@ public partial class MainWindow : Window, IDisposable
 
     private void RestoreFromTray()
     {
+        // The tray-only window is not assigned as the lifetime's MainWindow
+        // until the user asks to see it (or initial mounting fails).
+        if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop &&
+            desktop.MainWindow is null)
+            desktop.MainWindow = this;
         ShowInTaskbar = true;
-        Show();
         WindowState = WindowState.Normal;
+        Show();
         Activate();
     }
 

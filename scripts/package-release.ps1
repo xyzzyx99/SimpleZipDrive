@@ -329,7 +329,11 @@ foreach ($rid in $RuntimeIdentifiers)
     New-Item -ItemType Directory -Force -Path $publishDirectory | Out-Null
 
     Write-Host "Publishing $rid..."
-    dotnet publish $project -c Release -r $rid --self-contained false -o $publishDirectory --nologo
+    # Precompile some managed code for Windows x64 to reduce cold-start JIT work.
+    # May increase release size and publish time; does not speed up decompression.
+    $publishOptions = @()
+    if ($rid -eq 'win-x64') { $publishOptions += '-p:PublishReadyToRun=true' }
+    dotnet publish $project -c Release -r $rid --self-contained false -o $publishDirectory --nologo @publishOptions
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $rid." }
 
     # The single-file executable embeds the managed assemblies; everything else in the

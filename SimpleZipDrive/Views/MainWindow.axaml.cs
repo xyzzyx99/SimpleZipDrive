@@ -34,6 +34,10 @@ public partial class MainWindow : Window, IDisposable
     private bool _allowExit;
     private bool _commandLineMount;
     private bool _hadSuccessfulMount;
+    // Keep collected logs; defer expensive textbox updates while hidden.
+    private bool _logRefreshPending;
+    // UpdateMountStatus can run more than once per mount.
+    private string? _lastAutoOpenedMountPoint;
 
 
     /// <summary>
@@ -112,6 +116,12 @@ public partial class MainWindow : Window, IDisposable
     {
         Dispatcher.UIThread.Post(() =>
         {
+            if (!IsVisible)
+            {
+                // LoggingService still retains all entries for later display.
+                _logRefreshPending = true;
+                return;
+            }
             switch (e.Action)
             {
                 case NotifyCollectionChangedAction.Add:
@@ -703,13 +713,17 @@ public partial class MainWindow : Window, IDisposable
 
             if (ServiceProvider.Get<ISettingsService>().Settings.AutoOpenMountedDrive
                 && _mountService.CurrentMountPoint is { } mountPoint
-                && !ShellHelper.OpenFolder(mountPoint))
+                && !string.Equals(_lastAutoOpenedMountPoint, mountPoint, StringComparison.OrdinalIgnoreCase))
             {
-                _loggingService.LogError($"Failed to open the mounted location: {mountPoint}");
+                // Mark before opening, since Explorer may trigger another status update.
+                _lastAutoOpenedMountPoint = mountPoint;
+                if (!ShellHelper.OpenFolder(mountPoint))
+                    _loggingService.LogError($"Failed to open the mounted location: {mountPoint}");
             }
         }
         else
         {
+            _lastAutoOpenedMountPoint = null;
             MountStatusText.Text = "";
             UnmountButton.IsEnabled = false;
             MountButton.IsEnabled = true;
@@ -772,6 +786,11 @@ public partial class MainWindow : Window, IDisposable
         ShowInTaskbar = true;
         WindowState = WindowState.Normal;
         Show();
+        if (_logRefreshPending)
+        {
+            _logRefreshPending = false;
+            UpdateLogText();
+        }
         Activate();
     }
 

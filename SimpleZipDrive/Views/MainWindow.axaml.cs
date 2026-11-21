@@ -292,7 +292,7 @@ public partial class MainWindow : Window, IDisposable
         try
         {
 #pragma warning disable IL3002
-            await _mountService.MountAsync(zipFilePath, mountPointArg);
+            await MountWithProgressAsync(zipFilePath, mountPointArg);
             // Register command listener as soon as mounting completes.
             UpdateMountStatus();
 #pragma warning restore IL3002
@@ -423,7 +423,7 @@ public partial class MainWindow : Window, IDisposable
             else
             {
 #pragma warning disable IL3002
-                await _mountService.MountAsync(fileName);
+                await MountWithProgressAsync(fileName);
 #pragma warning restore IL3002
             }
         }
@@ -451,7 +451,7 @@ public partial class MainWindow : Window, IDisposable
             if (fileName is null) return;
 
 #pragma warning disable IL3002
-            await _mountService.MountAsync(fileName);
+            await MountWithProgressAsync(fileName);
 #pragma warning restore IL3002
         }
         catch (Exception ex)
@@ -488,6 +488,40 @@ public partial class MainWindow : Window, IDisposable
         }
     }
 
+    // Reuse this wrapper for GUI, CLI and folder mounts. The mount service and
+    // IPC lifecycle are unchanged; the notification is only a UI observer.
+    private async Task MountWithProgressAsync(string archivePath, string? mountPoint = null)
+    {
+        // Notifications are best-effort: a UI error must never prevent mounting.
+        MountProgressWindow? notification = null;
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                notification = new MountProgressWindow(Path.GetFileName(archivePath), mountPoint);
+                notification.Begin();
+            }
+            catch (Exception ex)
+            {
+                _loggingService.LogError($"Could not display mount progress: {ex.Message}");
+            }
+        }
+        try
+        {
+#pragma warning disable IL3002
+            await _mountService.MountAsync(archivePath, mountPoint);
+#pragma warning restore IL3002
+        }
+        finally
+        {
+            try { notification?.Finish(); }
+            catch (Exception ex)
+            {
+                _loggingService.LogError($"Could not close mount progress: {ex.Message}");
+            }
+        }
+    }
+
     private async Task MountAsFolderAsync(string archivePath)
     {
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
@@ -499,7 +533,7 @@ public partial class MainWindow : Window, IDisposable
         if (folders.Count == 0) return;
 
 #pragma warning disable IL3002
-        await _mountService.MountAsync(archivePath, folders[0].Path.LocalPath);
+        await MountWithProgressAsync(archivePath, folders[0].Path.LocalPath);
 #pragma warning restore IL3002
     }
 

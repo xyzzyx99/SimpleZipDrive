@@ -154,14 +154,18 @@ public partial class MainWindow : Window, IDisposable
             // CLI mounts default to tray; --show keeps the original visible GUI.
             _trayStartup = OperatingSystem.IsWindows() && _commandLineMount &&
                            !args.Contains("--show", StringComparer.OrdinalIgnoreCase);
-            if (_trayStartup) ShowInTaskbar = false;
+            if (_trayStartup)
+            {
+                // The Opened event runs when App calls Show(). Hide synchronously,
+                // before awaiting MountAsync, so there is no visible mounting window.
+                ShowInTaskbar = false;
+                Hide();
+            }
             if (args.Length > 0)
             {
                 await ProcessCommandLineArgsAsync(args.Where(a => !a.Equals("--show", StringComparison.OrdinalIgnoreCase)).ToArray());
-                if (_trayStartup && _mountService.IsMounted)
-                    Hide();
-                else
-                    ShowInTaskbar = true; // Keep errors visible, not a stranded hidden window.
+                if (_trayStartup && !_mountService.IsMounted)
+                    RestoreFromTray(); // Mount failed: show the error/log UI.
                 return;
             }
 
@@ -174,6 +178,8 @@ public partial class MainWindow : Window, IDisposable
         {
             const string context = "Error in method MainWindow_OpenedAsync";
             await ErrorLoggerStatic.LogErrorAsync(ex, context);
+            if (_trayStartup)
+                RestoreFromTray();
         }
     }
 

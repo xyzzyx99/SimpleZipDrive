@@ -61,8 +61,16 @@ internal sealed class UnmountIpc : IDisposable
                 using var reader = new StreamReader(pipe, Encoding.UTF8, leaveOpen: true);
                 using var writer = new StreamWriter(pipe, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
                 var request = await reader.ReadLineAsync(stop);
-                var ok = request == "UNMOUNT" && await unmount();
-                await writer.WriteLineAsync(ok ? "OK" : "ERROR");
+                if (request != "UNMOUNT")
+                {
+                    await writer.WriteLineAsync("ERROR");
+                    continue;
+                }
+                // ACK while the connection is still alive. UnmountAsync changes
+                // the mount status, which stops this listener and otherwise can
+                // race with sending the reply. ACK means request accepted.
+                await writer.WriteLineAsync("OK");
+                await unmount();
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
             catch (Exception) when (!stop.IsCancellationRequested) { await Task.Delay(200, stop); }

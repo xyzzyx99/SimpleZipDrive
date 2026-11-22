@@ -29,6 +29,7 @@ public partial class MainWindow : Window, IDisposable
     private readonly IScreenshotService _screenshotService;
     private readonly ISettingsService _settingsService;
     private readonly UnmountIpc _unmountIpc = new();
+    private readonly GuiInstanceIpc? _guiInstanceIpc;
     private TrayIcon? _trayIcon;
     private MountProgressWindow? _mountProgressWindow;
     private bool _trayStartup;
@@ -64,6 +65,8 @@ public partial class MainWindow : Window, IDisposable
         UpdateLogText();
 
         Opened += MainWindow_OpenedAsync;
+        if (OperatingSystem.IsWindows() && App.StartupArgs.Length == 0)
+            _guiInstanceIpc = new GuiInstanceIpc(RestoreFromTray);
         if (OperatingSystem.IsWindows() && App.StartupArgs.Length > 0) InitializeTrayIcon();
     }
 
@@ -87,6 +90,7 @@ public partial class MainWindow : Window, IDisposable
             _mountService.MountStatusChanged -= OnMountStatusChanged;
 
             _unmountIpc.Dispose();
+            _guiInstanceIpc?.Dispose();
             if (_trayIcon != null)
             {
                 _trayIcon.IsVisible = false;

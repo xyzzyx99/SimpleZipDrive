@@ -7,6 +7,7 @@ namespace SimpleZipDrive;
 /// </summary>
 internal static class Program
 {
+    private static Mutex? _guiInstanceMutex;
     // Initialization code. Don't use any Avalonia, third-party APIs or any
     // SynchronizationContext-reliant code before AppMain is called: things aren't initialized yet.
     /// <summary>
@@ -39,7 +40,38 @@ internal static class Program
             }
             return;
         }
-        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        // Only interactive GUI launches are single-instance. Archive CLI launches
+        // stay independent because the current mount service manages one drive.
+        if (OperatingSystem.IsWindows() && args.Length == 0)
+        {
+            var instanceMutex = new Mutex(false, @"Local\SimpleZipDrive.Gui.SingleInstance",
+                out var createdNew);
+            if (!createdNew)
+            {
+                instanceMutex.Dispose();
+                try
+                {
+                    Environment.ExitCode = GuiInstanceIpc.SignalShowAsync()
+                        .GetAwaiter().GetResult() ? 0 : 1;
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Unable to activate existing SimpleZipDrive: {ex.Message}");
+                    Environment.ExitCode = 1;
+                }
+                return;
+            }
+            _guiInstanceMutex = instanceMutex;
+        }
+        try
+        {
+            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        }
+        finally
+        {
+            _guiInstanceMutex?.Dispose();
+            _guiInstanceMutex = null;
+        }
     }
 
     // Avalonia configuration, don't remove; also used by visual designer.

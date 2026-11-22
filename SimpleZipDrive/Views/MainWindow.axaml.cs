@@ -573,7 +573,7 @@ public partial class MainWindow : Window, IDisposable
             try
             {
                 StatusText.Text = "Unmounting drive...";
-                await _mountService.UnmountAsync();
+                await UnmountAndExitAsync();
                 StatusText.Text = "Drive unmounted";
                 _loggingService.Log("Drive unmounted successfully.");
             }
@@ -637,6 +637,39 @@ public partial class MainWindow : Window, IDisposable
 
         e.Cancel = true;
         _ = PerformShutdownAsync();
+    }
+
+    // All explicit unmount entry points share the same process lifetime policy.
+    private bool _unmountAndExitInProgress;
+
+    private async Task UnmountAndExitAsync()
+    {
+        // These entry points execute on the Avalonia UI thread. Do not start
+        // a second unmount while the first one is still cleaning up.
+        if (_unmountAndExitInProgress || !_mountService.IsMounted)
+            return;
+
+        _unmountAndExitInProgress = true;
+        try
+        {
+            await _mountService.UnmountAsync();
+            if (_mountService.IsMounted)
+                return; // Failed/incomplete unmount: leave the owner alive.
+
+            if (!App.TryBeginShutdown())
+                return; // Another shutdown is already in progress.
+
+            _allowExit = true;
+            IsEnabled = false;
+            // The CLI server already sent its ACK. Let the current UI handler
+            // complete before invoking the existing graceful exit procedure.
+            Dispatcher.UIThread.Post(() => { _ = PerformShutdownAsync(); },
+                DispatcherPriority.Background);
+        }
+        finally
+        {
+            _unmountAndExitInProgress = false;
+        }
     }
 
     private async Task PerformShutdownAsync()
@@ -743,7 +776,7 @@ public partial class MainWindow : Window, IDisposable
                     await Dispatcher.UIThread.InvokeAsync(async () =>
                     {
                         if (_mountService.IsMounted)
-                            await _mountService.UnmountAsync();
+                            await UnmountAndExitAsync();
                     });
                     return !_mountService.IsMounted;
                 });
@@ -792,7 +825,7 @@ public partial class MainWindow : Window, IDisposable
         {
             if (_mountService.IsMounted)
             {
-                try { await _mountService.UnmountAsync(); }
+                try { await UnmountAndExitAsync(); }
                 catch (Exception ex)
                 {
                     _loggingService.LogError($"Tray unmount failed: {ex.Message}");

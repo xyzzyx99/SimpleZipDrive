@@ -114,7 +114,7 @@ public static class ArchiveFormats
         {
             stream.Position = 0;
             Span<byte> buffer = stackalloc byte[8];
-            var count = stream.ReadAtLeast(buffer, buffer.Length, throwIfEndOfStream: false);
+            var count = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
             ReadOnlySpan<byte> header = buffer[..count];
             ReadOnlySpan<byte> zip = [0x50, 0x4B, 0x03, 0x04];
             ReadOnlySpan<byte> emptyZip = [0x50, 0x4B, 0x05, 0x06];

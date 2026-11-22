@@ -78,7 +78,7 @@ public class ZipFileSystemCore : IDisposable
         _sourceArchiveStream = archiveStream;
         _logErrorAction = logErrorAction;
         _passwordProvider = passwordProvider;
-        ArchiveType = archiveType.ToLowerInvariant();
+        ArchiveType = ArchiveFormats.DetectArchiveType(archiveStream) ?? archiveType.ToLowerInvariant();
         MaxMemorySize = maxMemorySize;
         VolumeLabel = volumeLabel ?? DefaultVolumeLabel;
         var availableMemory = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;

@@ -70,16 +70,69 @@ public static class ArchiveFormats
         [".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz"];
 
     /// <summary>
-    ///     Returns the archive type identifier for a file path (e.g. <c>"zip"</c>, <c>"7z"</c>, <c>"rar"</c>, <c>"tar"</c>).
+    ///     Returns the archive type identifier, preferring a recognized ZIP, 7-Zip or RAR header
+    ///     over the filename extension. Falls back to extension mapping when no header is recognized.
     ///     Comic-book extensions are mapped to their container format so they can be opened by the
     ///     existing readers (a <c>.cbz</c> is a ZIP file, a <c>.cbr</c> is a RAR file, a <c>.cb7</c> is a 7-Zip file).
     ///     Xbox disc-image extensions (<c>.iso</c>, <c>.xiso</c>, <c>.cso</c>) all map to the XISO reader,
     ///     which validates the Xbox XDVDFS header during mount.
-    ///     Unknown extensions are returned without the leading dot.
+    ///     When no header is recognized, unknown extensions are returned without the leading dot.
     /// </summary>
     /// <param name="filePath">The archive file path.</param>
     /// <returns>The archive type identifier.</returns>
     public static string GetArchiveType(string filePath)
+    {
+        var extensionType = GetArchiveTypeFromExtension(filePath);
+        // Some callers supply a filename only. Preserve extension mapping when
+        // no file is available, and leave actual open errors to the mount path.
+        if (!File.Exists(filePath)) return extensionType;
+        try
+        {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            return DetectArchiveType(stream) ?? extensionType;
+        }
+        catch (IOException)
+        {
+            return extensionType;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return extensionType;
+        }
+    }
+
+    /// <summary>
+    ///     Detects standard ZIP, 7-Zip, RAR4 and RAR5 headers. Returns null for
+    ///     unrecognized formats or non-seekable streams. Preserves stream position.
+    /// </summary>
+    public static string? DetectArchiveType(Stream stream)
+    {
+        if (!stream.CanRead || !stream.CanSeek) return null;
+        var originalPosition = stream.Position;
+        try
+        {
+            stream.Position = 0;
+            Span<byte> buffer = stackalloc byte[8];
+            var count = stream.ReadAtLeast(buffer, buffer.Length, throwIfEndOfStream: false);
+            ReadOnlySpan<byte> header = buffer[..count];
+            ReadOnlySpan<byte> zip = [0x50, 0x4B, 0x03, 0x04];
+            ReadOnlySpan<byte> emptyZip = [0x50, 0x4B, 0x05, 0x06];
+            ReadOnlySpan<byte> sevenZip = [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+            ReadOnlySpan<byte> rar4 = [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00];
+            ReadOnlySpan<byte> rar5 = [0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00];
+            if (header.StartsWith(zip) || header.StartsWith(emptyZip)) return Zip;
+            if (header.StartsWith(sevenZip)) return SevenZip;
+            if (header.StartsWith(rar4) || header.StartsWith(rar5)) return Rar;
+            return null;
+        }
+        finally
+        {
+            stream.Position = originalPosition;
+        }
+    }
+
+    private static string GetArchiveTypeFromExtension(string filePath)
     {
         var fileName = Path.GetFileName(filePath).ToLowerInvariant();
 
@@ -102,13 +155,15 @@ public static class ArchiveFormats
     }
 
     /// <summary>
-    ///     Returns true when the file extension corresponds to a supported archive format.
+    ///     Returns true when the extension or a recognized header identifies a supported format.
     /// </summary>
     /// <param name="filePath">The archive file path.</param>
     /// <returns>True when the archive type is supported; otherwise false.</returns>
     public static bool IsSupportedArchive(string filePath)
     {
-        var type = GetArchiveType(filePath);
+        var type = GetArchiveTypeFromExtension(filePath);
+        if (ContainerExtensions.Contains("." + type, StringComparer.OrdinalIgnoreCase)) return true;
+        type = GetArchiveType(filePath);
         return ContainerExtensions.Contains("." + type, StringComparer.OrdinalIgnoreCase);
     }
 }

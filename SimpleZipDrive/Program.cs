@@ -40,18 +40,17 @@ internal static class Program
             }
             return;
         }
-        // Only interactive GUI launches are single-instance. Archive CLI launches
-        // stay independent because the current mount service manages one drive.
-        if (OperatingSystem.IsWindows() && args.Length == 0)
+        // All Windows launches share the mount host (unmount clients handled above).
+        if (OperatingSystem.IsWindows())
         {
-            var instanceMutex = new Mutex(false, @"Local\SimpleZipDrive.Gui.SingleInstance",
+            var instanceMutex = new Mutex(false, @"Local\" + GuiInstanceIpc.InstanceName,
                 out var createdNew);
             if (!createdNew)
             {
                 instanceMutex.Dispose();
                 try
                 {
-                    Environment.ExitCode = GuiInstanceIpc.SignalShowAsync()
+                    Environment.ExitCode = GuiInstanceIpc.SignalAsync(args)
                         .GetAwaiter().GetResult() ? 0 : 1;
                 }
                 catch (Exception ex)
@@ -69,6 +68,8 @@ internal static class Program
         }
         finally
         {
+            if (OperatingSystem.IsWindows())
+                global::SimpleZipDrive.Mounting.Dokan.DokanMountService.ReleaseSharedDokan();
             _guiInstanceMutex?.Dispose();
             _guiInstanceMutex = null;
         }

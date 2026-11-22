@@ -16,6 +16,24 @@ namespace SimpleZipDrive.Mounting.Dokan;
 public class DokanMountService : IDisposable, IMountService
 {
     private static bool _dokanArchitectureMismatch;
+    // DokanInit/DokanShutdown are process-wide. Keep one owner for the process,
+    // never dispose it when an individual archive is unmounted.
+    private static readonly Lock SharedDokanLock = new();
+    private static DokanDriver? _sharedDokan;
+    private static DokanDriver GetSharedDokan(ILogger logger)
+    {
+        lock (SharedDokanLock)
+            return _sharedDokan ??= new DokanDriver(logger);
+    }
+    internal static void ReleaseSharedDokan()
+    {
+        lock (SharedDokanLock)
+        {
+            try { _sharedDokan?.Dispose(); }
+            catch (Exception ex) { System.Diagnostics.Trace.WriteLine(ex); }
+            finally { _sharedDokan = null; }
+        }
+    }
 
     /// <summary>
     ///     Minimum dokan2.dll library version required by DokanNet 2.3.0, which is the first
@@ -436,7 +454,7 @@ public class DokanMountService : IDisposable, IMountService
             DokanDriver dokan;
             try
             {
-                dokan = new DokanDriver(logger);
+                dokan = GetSharedDokan(logger);
             }
             catch (Exception ex) when (IsDokanUnavailable(ex))
             {
@@ -446,7 +464,7 @@ public class DokanMountService : IDisposable, IMountService
                 return;
             }
 
-            using (dokan)
+            // Shared driver lifetime is the process lifetime.
             {
                 _loggingService.Log($"Dokan Library Version: {dokan.Version}");
                 _loggingService.Log($"Dokan Driver Version: {dokan.DriverVersion}");
@@ -475,7 +493,7 @@ public class DokanMountService : IDisposable, IMountService
         DokanDriver dokan;
         try
         {
-            dokan = new DokanDriver(logger);
+            dokan = GetSharedDokan(logger);
         }
         catch (Exception ex) when (IsDokanUnavailable(ex))
         {
@@ -485,7 +503,7 @@ public class DokanMountService : IDisposable, IMountService
             return;
         }
 
-        using (dokan)
+        // Shared driver lifetime is the process lifetime.
         {
             _loggingService.Log($"Dokan Library Version: {dokan.Version}");
             _loggingService.Log($"Dokan Driver Version: {dokan.DriverVersion}");

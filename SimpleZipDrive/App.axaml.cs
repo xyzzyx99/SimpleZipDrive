@@ -45,7 +45,8 @@ public class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+            desktop.ShutdownMode = OperatingSystem.IsWindows()
+                ? ShutdownMode.OnExplicitShutdown : ShutdownMode.OnMainWindowClose;
             desktop.Exit += OnDesktopExit;
             desktop.ShutdownRequested += OnDesktopShutdownRequested;
             StartupArgs = desktop.Args ?? [];

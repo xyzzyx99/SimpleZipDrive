@@ -25,21 +25,16 @@ public partial class MainWindow : Window, IDisposable
     private static volatile bool _shutdownCompleted;
     private readonly ILoggingService _loggingService;
 
-    private readonly IMountService _mountService;
     private readonly IScreenshotService _screenshotService;
     private readonly ISettingsService _settingsService;
-    private readonly UnmountIpc _unmountIpc = new();
     private readonly GuiInstanceIpc? _guiInstanceIpc;
     private TrayIcon? _trayIcon;
-    private MountProgressWindow? _mountProgressWindow;
     private bool _trayStartup;
     private bool _allowExit;
     private bool _commandLineMount;
     private bool _hadSuccessfulMount;
     // Keep collected logs; defer expensive textbox updates while hidden.
     private bool _logRefreshPending;
-    // UpdateMountStatus can run more than once per mount.
-    private string? _lastAutoOpenedMountPoint;
 
 
     /// <summary>
@@ -51,12 +46,10 @@ public partial class MainWindow : Window, IDisposable
         InitializeComponent();
 
         // Get services from the service provider
-        _mountService = ServiceProvider.Get<IMountService>();
         _loggingService = ServiceProvider.Get<ILoggingService>();
         _screenshotService = ServiceProvider.Get<IScreenshotService>();
         _settingsService = ServiceProvider.Get<ISettingsService>();
 
-        _mountService.MountStatusChanged += OnMountStatusChanged;
 
         // Subscribe to log entries collection changes
         ((INotifyCollectionChanged)_loggingService.LogEntries).CollectionChanged += OnLogEntriesChanged;
@@ -65,9 +58,11 @@ public partial class MainWindow : Window, IDisposable
         UpdateLogText();
 
         Opened += MainWindow_OpenedAsync;
-        if (OperatingSystem.IsWindows() && App.StartupArgs.Length == 0)
-            _guiInstanceIpc = new GuiInstanceIpc(RestoreFromTray);
-        if (OperatingSystem.IsWindows() && App.StartupArgs.Length > 0) InitializeTrayIcon();
+        if (OperatingSystem.IsWindows())
+        {
+            InitializeTrayIcon();
+            _guiInstanceIpc = new GuiInstanceIpc(ReceiveInstanceRequest);
+        }
     }
 
     // Execute the normal startup mount without ever showing a main window.
@@ -87,9 +82,7 @@ public partial class MainWindow : Window, IDisposable
                 notifyCollection.CollectionChanged -= OnLogEntriesChanged;
 
             // Unsubscribe from mount service events
-            _mountService.MountStatusChanged -= OnMountStatusChanged;
 
-            _unmountIpc.Dispose();
             _guiInstanceIpc?.Dispose();
             if (_trayIcon != null)
             {
@@ -98,7 +91,7 @@ public partial class MainWindow : Window, IDisposable
                 _trayIcon = null;
             }
             // Dispose the mount service (which handles unmounting if needed)
-            (_mountService as IDisposable)?.Dispose();
+            DisposeMountSessions();
         }
         catch (Exception ex)
         {
@@ -111,11 +104,6 @@ public partial class MainWindow : Window, IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern nint GetCurrentProcess();
-
-    private void OnMountStatusChanged(object? sender, MountStatusChangedEventArgs e)
-    {
-        Dispatcher.UIThread.Post(UpdateMountStatus, DispatcherPriority.Background);
-    }
 
     private void OnLogEntriesChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
@@ -184,7 +172,7 @@ public partial class MainWindow : Window, IDisposable
             if (args.Length > 0)
             {
                 await ProcessCommandLineArgsAsync(args.Where(a => !a.Equals("--show", StringComparison.OrdinalIgnoreCase)).ToArray());
-                if (_trayStartup && !_hadSuccessfulMount && !_mountService.IsMounted)
+                if (_trayStartup && !_hadSuccessfulMount && !HasMounted)
                     RestoreFromTray(); // Initial mount failed: show error/log UI.
                 return;
             }
@@ -298,8 +286,6 @@ public partial class MainWindow : Window, IDisposable
         {
 #pragma warning disable IL3002
             await MountWithProgressAsync(zipFilePath, mountPointArg);
-            // Register command listener as soon as mounting completes.
-            UpdateMountStatus();
 #pragma warning restore IL3002
         }
         catch (Exception ex)
@@ -366,11 +352,7 @@ public partial class MainWindow : Window, IDisposable
             "Donate", MessageBoxButton.Ok, MessageBoxImage.Information);
     }
 
-    private void Exit_Click(object? sender, RoutedEventArgs e)
-    {
-        // Trigger the closing event which will handle proper cleanup
-        Close();
-    }
+    private void Exit_Click(object? sender, RoutedEventArgs e) => RequestMultiExit();
 
     private void Window_KeyDown(object? sender, KeyEventArgs e)
     {
@@ -410,12 +392,7 @@ public partial class MainWindow : Window, IDisposable
     {
         try
         {
-            if (_mountService.IsMounted)
-            {
-                MessageBox.Show("A drive is already mounted. Please unmount it first.", "Drive Already Mounted",
-                    MessageBoxButton.Ok, MessageBoxImage.Information);
-                return;
-            }
+            if (_multiExiting) return;
 
             var fileName = await PickArchiveAsync();
             if (fileName is null) return;
@@ -445,12 +422,7 @@ public partial class MainWindow : Window, IDisposable
     {
         try
         {
-            if (_mountService.IsMounted)
-            {
-                MessageBox.Show("A drive is already mounted. Please unmount it first.", "Drive Already Mounted",
-                    MessageBoxButton.Ok, MessageBoxImage.Information);
-                return;
-            }
+            if (_multiExiting) return;
 
             var fileName = await PickArchiveAsync();
             if (fileName is null) return;
@@ -472,12 +444,7 @@ public partial class MainWindow : Window, IDisposable
     {
         try
         {
-            if (_mountService.IsMounted)
-            {
-                MessageBox.Show("A drive is already mounted. Please unmount it first.", "Drive Already Mounted",
-                    MessageBoxButton.Ok, MessageBoxImage.Information);
-                return;
-            }
+            if (_multiExiting) return;
 
             var fileName = await PickArchiveAsync();
             if (fileName is null) return;
@@ -490,46 +457,6 @@ public partial class MainWindow : Window, IDisposable
             await ErrorLoggerStatic.LogErrorAsync(ex, context);
             MessageBox.Show($"Error mounting archive: {ex.Message}", "Mount Error",
                 MessageBoxButton.Ok, MessageBoxImage.Error);
-        }
-    }
-
-    // Reuse this wrapper for GUI, CLI and folder mounts. The mount service and
-    // IPC lifecycle are unchanged; the notification is only a UI observer.
-    private async Task MountWithProgressAsync(string archivePath, string? mountPoint = null)
-    {
-        // Notifications are best-effort: a UI error must never prevent mounting.
-        MountProgressWindow? notification = null;
-        if (OperatingSystem.IsWindows())
-        {
-            try
-            {
-                notification = new MountProgressWindow(Path.GetFileName(archivePath), mountPoint);
-                _mountProgressWindow = notification;
-                notification.Begin();
-            }
-            catch (Exception ex)
-            {
-                _loggingService.LogError($"Could not display mount progress: {ex.Message}");
-            }
-        }
-        try
-        {
-#pragma warning disable IL3002
-            await _mountService.MountAsync(archivePath, mountPoint);
-#pragma warning restore IL3002
-        }
-        finally
-        {
-            try { notification?.Finish(); }
-            catch (Exception ex)
-            {
-                _loggingService.LogError($"Could not close mount progress: {ex.Message}");
-            }
-            finally
-            {
-                if (ReferenceEquals(_mountProgressWindow, notification))
-                    _mountProgressWindow = null;
-            }
         }
     }
 
@@ -566,38 +493,8 @@ public partial class MainWindow : Window, IDisposable
 
     private async void Unmount_ClickAsync(object? sender, RoutedEventArgs e)
     {
-        try
-        {
-            if (!_mountService.IsMounted) return;
-
-            try
-            {
-                StatusText.Text = "Unmounting drive...";
-                await UnmountAndExitAsync();
-                StatusText.Text = "Drive unmounted";
-                _loggingService.Log("Drive unmounted successfully.");
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected during unmount - no need to report
-                StatusText.Text = "Drive unmount cancelled";
-            }
-            catch (Exception ex)
-            {
-                const string context = "Error unmounting drive";
-                await ErrorLoggerStatic.LogErrorAsync(ex, context);
-                MessageBox.Show($"Error unmounting drive: {ex.Message}", "Unmount Error",
-                    MessageBoxButton.Ok, MessageBoxImage.Error);
-                StatusText.Text = "Error unmounting drive";
-            }
-        }
-        catch (Exception ex)
-        {
-            const string context = "Error unmounting drive";
-            await ErrorLoggerStatic.LogErrorAsync(ex, context);
-        }
+        await SelectAndUnmountAsync();
     }
-
     private void CopySelection_Click(object? sender, RoutedEventArgs e)
     {
         var selectedText = LogTextBox.SelectedText;
@@ -626,7 +523,7 @@ public partial class MainWindow : Window, IDisposable
 
     private void MainWindow_Closing(object? sender, WindowClosingEventArgs e)
     {
-        if (_trayStartup && !_allowExit && _mountService.IsMounted)
+        if (OperatingSystem.IsWindows() && !_allowExit && _sessions.Count > 0)
         {
             e.Cancel = true;
             Hide();
@@ -639,71 +536,14 @@ public partial class MainWindow : Window, IDisposable
         _ = PerformShutdownAsync();
     }
 
-    // All explicit unmount entry points share the same process lifetime policy.
-    private bool _unmountAndExitInProgress;
-
-    private async Task UnmountAndExitAsync()
-    {
-        // These entry points execute on the Avalonia UI thread. Do not start
-        // a second unmount while the first one is still cleaning up.
-        if (_unmountAndExitInProgress || !_mountService.IsMounted)
-            return;
-
-        _unmountAndExitInProgress = true;
-        try
-        {
-            await _mountService.UnmountAsync();
-            if (_mountService.IsMounted)
-                return; // Failed/incomplete unmount: leave the owner alive.
-
-            if (!App.TryBeginShutdown())
-                return; // Another shutdown is already in progress.
-
-            _allowExit = true;
-            IsEnabled = false;
-            // The CLI server already sent its ACK. Let the current UI handler
-            // complete before invoking the existing graceful exit procedure.
-            Dispatcher.UIThread.Post(() => { _ = PerformShutdownAsync(); },
-                DispatcherPriority.Background);
-        }
-        finally
-        {
-            _unmountAndExitInProgress = false;
-        }
-    }
-
     private async Task PerformShutdownAsync()
     {
         try
         {
             // Update UI directly since we're on the UI thread context
             IsEnabled = false;
-            StatusText.Text = _mountService.IsMounted
-                ? "Unmounting drive and shutting down..."
-                : "Shutting down...";
-
-            if (_mountService.IsMounted)
-            {
-                var unmountTask = _mountService.UnmountAsync();
-                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(5));
-                var completedTask = await Task.WhenAny(unmountTask, timeoutTask);
-                if (completedTask == timeoutTask)
-                {
-                    // Unmount timed out, force exit
-                    await App.ShutdownCts.CancelAsync();
-                    ForceExit();
-                    return;
-                }
-
-                try
-                {
-                    await unmountTask;
-                }
-                catch (OperationCanceledException)
-                {
-                }
-            }
-
+            StatusText.Text = "Unmounting drives and shutting down...";
+            await ShutdownAllMountsAsync();
             await App.ShutdownCts.CancelAsync();
 
             Closing -= MainWindow_Closing;
@@ -758,92 +598,9 @@ public partial class MainWindow : Window, IDisposable
         }
     }
 
-    private void UpdateMountStatus()
-    {
-        if (_mountService.IsMounted)
-        {
-            // MountAsync stays pending until unmount. End the popup on mount success.
-            _mountProgressWindow?.Finish();
-            _mountProgressWindow = null;
-        }
-        if (_mountService.IsMounted) _hadSuccessfulMount = true;
-        // One pipe per mount point; lets a second process target the owning instance.
-        if (OperatingSystem.IsWindows())
-        {
-            if (_mountService.IsMounted && _mountService.CurrentMountPoint is { } point)
-                _unmountIpc.Start(point, async () =>
-                {
-                    await Dispatcher.UIThread.InvokeAsync(async () =>
-                    {
-                        if (_mountService.IsMounted)
-                            await UnmountAndExitAsync();
-                    });
-                    return !_mountService.IsMounted;
-                });
-            else
-                _unmountIpc.Stop();
-        }
-        if (_trayIcon != null)
-            _trayIcon.ToolTipText = _mountService.IsMounted
-                ? $"SimpleZipDrive: {_mountService.CurrentMountPoint}"
-                : "SimpleZipDrive (not mounted)";
-        if (_mountService.IsMounted)
-        {
-            MountStatusText.Text =
-                $"Mounted: {_mountService.CurrentMountPoint} | Archive: {_mountService.CurrentArchivePath}";
-            StatusText.Text = "Drive mounted - Click Unmount to unmount";
-            UnmountButton.IsEnabled = true;
-            MountButton.IsEnabled = false;
-
-            if (ServiceProvider.Get<ISettingsService>().Settings.AutoOpenMountedDrive
-                && _mountService.CurrentMountPoint is { } mountPoint
-                && !string.Equals(_lastAutoOpenedMountPoint, mountPoint, StringComparison.OrdinalIgnoreCase))
-            {
-                // Mark before opening, since Explorer may trigger another status update.
-                _lastAutoOpenedMountPoint = mountPoint;
-                if (!ShellHelper.OpenFolder(mountPoint))
-                    _loggingService.LogError($"Failed to open the mounted location: {mountPoint}");
-            }
-        }
-        else
-        {
-            _lastAutoOpenedMountPoint = null;
-            MountStatusText.Text = "";
-            UnmountButton.IsEnabled = false;
-            MountButton.IsEnabled = true;
-        }
-    }
-
     private void InitializeTrayIcon()
     {
-        var menu = new NativeMenu();
-        var open = new NativeMenuItem("Open SimpleZipDrive");
-        open.Click += (_, _) => RestoreFromTray();
-        menu.Add(open);
-        var unmount = new NativeMenuItem("Unmount");
-        unmount.Click += async (_, _) =>
-        {
-            if (_mountService.IsMounted)
-            {
-                try { await UnmountAndExitAsync(); }
-                catch (Exception ex)
-                {
-                    _loggingService.LogError($"Tray unmount failed: {ex.Message}");
-                    RestoreFromTray();
-                }
-            }
-        };
-        menu.Add(unmount);
-        var exit = new NativeMenuItem("Exit");
-        exit.Click += (_, _) =>
-        {
-            _allowExit = true;
-            // A never-shown tray window may not raise Closing on Close().
-            // Start the same shutdown procedure explicitly.
-            if (App.TryBeginShutdown())
-                _ = PerformShutdownAsync();
-        };
-        menu.Add(exit);
+        var menu = BuildMountTrayMenu();
         // WindowIcon loads the existing bundled application icon (not a new asset).
         using var iconStream = Avalonia.Platform.AssetLoader.Open(
             new Uri("avares://SimpleZipDrive/icon/zip.png"));

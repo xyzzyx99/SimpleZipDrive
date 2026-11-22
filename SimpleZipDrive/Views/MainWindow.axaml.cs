@@ -30,7 +30,6 @@ public partial class MainWindow : Window, IDisposable
     private readonly GuiInstanceIpc? _guiInstanceIpc;
     private TrayIcon? _trayIcon;
     private bool _trayStartup;
-    private bool _allowExit;
     private bool _commandLineMount;
     private bool _hadSuccessfulMount;
     // Keep collected logs; defer expensive textbox updates while hidden.
@@ -61,6 +60,7 @@ public partial class MainWindow : Window, IDisposable
         if (OperatingSystem.IsWindows())
         {
             InitializeTrayIcon();
+            PropertyChanged += OnTrayWindowStateChanged;
             _guiInstanceIpc = new GuiInstanceIpc(ReceiveInstanceRequest);
         }
     }
@@ -83,6 +83,7 @@ public partial class MainWindow : Window, IDisposable
 
             // Unsubscribe from mount service events
 
+            PropertyChanged -= OnTrayWindowStateChanged;
             _guiInstanceIpc?.Dispose();
             if (_trayIcon != null)
             {
@@ -523,17 +524,11 @@ public partial class MainWindow : Window, IDisposable
 
     private void MainWindow_Closing(object? sender, WindowClosingEventArgs e)
     {
-        if (OperatingSystem.IsWindows() && !_allowExit && _sessions.Count > 0)
-        {
-            e.Cancel = true;
-            Hide();
-            return;
-        }
-        if (!App.TryBeginShutdown())
-            return;
-
+        // Close means exit, even when there are mounted drives. Keep the
+        // window alive until the existing graceful shutdown has drained them.
         e.Cancel = true;
-        _ = PerformShutdownAsync();
+        // Defer until the native Closing event returns (also for zero mounts).
+        Dispatcher.UIThread.Post(RequestMultiExit, DispatcherPriority.Normal);
     }
 
     private async Task PerformShutdownAsync()
@@ -617,8 +612,24 @@ public partial class MainWindow : Window, IDisposable
             TrayIcon.SetIcons(Application.Current, new TrayIcons { _trayIcon });
     }
 
+    private void OnTrayWindowStateChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (e.Property != WindowStateProperty || WindowState != WindowState.Minimized || _multiExiting)
+            return;
+
+        // Let the native minimize operation finish before hiding the window.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_multiExiting || _trayIcon is null || !IsVisible || WindowState != WindowState.Minimized)
+                return;
+            Hide();
+            ShowInTaskbar = false;
+        }, DispatcherPriority.Background);
+    }
+
     private void RestoreFromTray()
     {
+        if (_multiExiting) return;
         // The tray-only window is not assigned as the lifetime's MainWindow
         // until the user asks to see it (or initial mounting fails).
         if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop &&

@@ -146,32 +146,21 @@ public partial class MainWindow
             session.Service.MountStatusChanged -= OnStatus;
             // The backend's lifecycle can finish before its unmount cleanup task.
             // Wait for both before disposing the service and releasing the mount point.
-            var stoppedSuccessfully = false;
             try
             {
                 if (session.StopTask is not null) await session.StopTask;
                 else if (session.Service.IsMounted) await session.Service.UnmountAsync();
-                stoppedSuccessfully = succeeded && !session.Service.IsMounted;
             }
             catch (Exception ex) { _loggingService.LogError($"Unmount cleanup: {ex.Message}"); }
             try { await Task.Run(session.Service.Dispose); }
             catch (Exception ex)
             {
-                stoppedSuccessfully = false;
                 _loggingService.LogError($"Mount disposal: {ex.Message}");
             }
             _sessions.Remove(session);
             RefreshMountList();
             if (!succeeded && !_multiExiting && !IsVisible) RestoreFromTray();
-            // Exit only after the final successful mount has been cleaned up.
-            // Count queued/initializing sessions too, not just mounted drives.
-            if (OperatingSystem.IsWindows() && stoppedSuccessfully && !_multiExiting && _sessions.Count == 0)
-            {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    if (!_multiExiting && _sessions.Count == 0) RequestMultiExit();
-                }, DispatcherPriority.Background);
-            }
+            // Keep the idle host and tray icon alive for the next mount.
         }
     }
 
@@ -272,7 +261,6 @@ public partial class MainWindow
 
     private void RequestMultiExit()
     {
-        _allowExit = true;
         if (App.TryBeginShutdown()) _ = PerformShutdownAsync();
     }
 

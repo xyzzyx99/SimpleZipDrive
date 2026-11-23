@@ -60,14 +60,27 @@ internal static class ModalDialogHost
     }
 
     /// <summary>
-    ///     Returns the most recently active window as the dialog owner (falling back to the
-    ///     main window), so a dialog raised from a modal settings window is owned by it.
+    ///     Returns a visible, non-minimized owner for a modal dialog. A hidden tray window
+    ///     cannot own ShowDialog: Avalonia throws if the owner is not visible.
     /// </summary>
-    /// <returns>The owner window, or <see langword="null" /> when no desktop lifetime exists.</returns>
+    /// <returns>A visible owner, or <see langword="null" /> in tray-only mode.</returns>
     public static Window? GetOwnerWindow()
     {
         var lifetime = Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime;
-        return lifetime?.Windows.LastOrDefault(static window => window.IsActive) ?? lifetime?.MainWindow;
+        if (lifetime is null)
+            return null;
+
+        var active = lifetime.Windows.LastOrDefault(static window =>
+            window.IsActive && window.IsVisible && window.WindowState != WindowState.Minimized);
+        if (active is not null)
+            return active;
+
+        var main = lifetime.MainWindow;
+        if (main is { IsVisible: true } && main.WindowState != WindowState.Minimized)
+            return main;
+
+        return lifetime.Windows.LastOrDefault(static window =>
+            window.IsVisible && window.WindowState != WindowState.Minimized);
     }
 
     private static T Run<T>(Func<Window> createDialog, Func<Window, T> readResult)
@@ -85,10 +98,20 @@ internal static class ModalDialogHost
 
         try
         {
-            if (owner != null && owner != dialog)
+            if (owner is not null && owner != dialog)
+            {
                 _ = dialog.ShowDialog(owner);
+            }
             else
+            {
+                // Tray startup has no visible main window. The prompt must be shown
+                // without an owner, with its own taskbar presence and foreground focus.
+                dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+                dialog.ShowInTaskbar = true;
+                dialog.Topmost = true;
                 dialog.Show();
+                dialog.Activate();
+            }
 
             // Nested dispatcher loop: keeps the modal dialog responsive while the calling
             // (possibly background) thread blocks until the user closes it. The token is

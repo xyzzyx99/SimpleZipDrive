@@ -15,7 +15,9 @@ internal sealed class PasswordPromptService : IPasswordPromptService
             {
                 var passwordWindow = (PasswordWindow)window;
                 var password = passwordWindow.Password;
+                var aborted = passwordWindow.Aborted;
                 passwordWindow.ClearPassword();
+                if (aborted) throw new MountAbortedException();
                 return password;
             });
     }

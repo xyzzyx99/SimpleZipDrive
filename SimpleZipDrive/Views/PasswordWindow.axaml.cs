@@ -37,6 +37,9 @@ public partial class PasswordWindow : Window
     /// <summary>Gets the password entered by the user, or <see langword="null" /> if the dialog was cancelled.</summary>
     public string? Password { get; private set; }
 
+    /// <summary>Whether the user explicitly aborted the whole mount attempt.</summary>
+    public bool Aborted { get; private set; }
+
     /// <summary>
     ///     Clears the stored password and the password input field.
     /// </summary>
@@ -53,6 +56,12 @@ public partial class PasswordWindow : Window
 
     private void Cancel_Click(object? sender, RoutedEventArgs e)
     {
+        CompleteDialog(false);
+    }
+
+    private void Abort_Click(object? sender, RoutedEventArgs e)
+    {
+        Aborted = true;
         CompleteDialog(false);
     }
 

@@ -663,7 +663,15 @@ public class WinFspMountService : IDisposable, IMountService
 
             _loggingService.Log($"Attempting to mount on '{currentMountPoint}'...");
 
-            if (await AttemptMountLifecycleAsync(archivePath, currentMountPoint, archiveType)) return;
+            try
+            {
+                if (await AttemptMountLifecycleAsync(archivePath, currentMountPoint, archiveType)) return;
+            }
+            catch (MountAbortedException)
+            {
+                _loggingService.Log("Mount aborted by user.");
+                return;
+            }
         }
 
         _loggingService.Log("Error: Failed to auto-mount on any preferred drive letters.");
@@ -676,8 +684,15 @@ public class WinFspMountService : IDisposable, IMountService
         var mountPoint = GetCrossIntegrityMountPath(archivePath);
         _loggingService.Log($"Cross-integrity mode: mounting to folder '{mountPoint}'.");
 
-        if (!await AttemptMountLifecycleAsync(archivePath, mountPoint, archiveType))
-            _loggingService.Log($"Error: Failed to cross-integrity mount on '{mountPoint}'.");
+        try
+        {
+            if (!await AttemptMountLifecycleAsync(archivePath, mountPoint, archiveType))
+                _loggingService.Log($"Error: Failed to cross-integrity mount on '{mountPoint}'.");
+        }
+        catch (MountAbortedException)
+        {
+            _loggingService.Log("Mount aborted by user.");
+        }
     }
 
     [RequiresAssemblyFiles(
@@ -686,8 +701,15 @@ public class WinFspMountService : IDisposable, IMountService
     {
         if (mountPoint.Length == 1 && char.IsLetter(mountPoint[0])) mountPoint = mountPoint.ToUpperInvariant() + ":";
 
-        if (!await AttemptMountLifecycleAsync(archivePath, mountPoint, archiveType))
-            _loggingService.Log($"Error: Failed to mount on '{mountPoint}'.");
+        try
+        {
+            if (!await AttemptMountLifecycleAsync(archivePath, mountPoint, archiveType))
+                _loggingService.Log($"Error: Failed to mount on '{mountPoint}'.");
+        }
+        catch (MountAbortedException)
+        {
+            _loggingService.Log("Mount aborted by user.");
+        }
     }
 
     private async Task<bool> AttemptMountLifecycleAsync(string archivePath, string mountPoint, string archiveType)
@@ -986,9 +1008,14 @@ public class WinFspMountService : IDisposable, IMountService
 
             return true;
         }
+        catch (MountAbortedException)
+        {
+            CurrentArchivePath = null;
+            throw;
+        }
         catch (OperationCanceledException ex)
         {
-            // User cancelled the password prompt - expected behavior, not an error.
+            // Cancel retains the original retry behavior.
             _loggingService.Log($"Mount cancelled: {ex.Message}");
             CurrentArchivePath = null;
             return false;

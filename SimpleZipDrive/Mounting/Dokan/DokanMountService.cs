@@ -635,9 +635,15 @@ public class DokanMountService : IDisposable, IMountService
 
             return MountAttemptOutcome.Mounted;
         }
+        catch (MountAbortedException)
+        {
+            _loggingService.Log("Mount aborted by user.");
+            CurrentArchivePath = null;
+            return MountAttemptOutcome.Failed;
+        }
         catch (OperationCanceledException ex)
         {
-            // User cancelled the password prompt - expected behavior, not an error.
+            // Cancel retains the original behavior.
             _loggingService.Log($"Mount cancelled: {ex.Message}");
             CurrentArchivePath = null;
             return MountAttemptOutcome.Failed;
